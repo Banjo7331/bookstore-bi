@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bookstore BI</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}" defer></script>
+<script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>Bookstore BI</h1>
+      <p class="sub">Five stores, cleaned with pandas</p>
+    </div>
+  </div>
+  <div class="controls">
+    <label class="field">
+      <span>Store</span>
+      <select id="store">
+        {% for store in stores %}<option value="{{ store }}">{{ store }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field"><span>From</span><input type="date" id="dateFrom"></label>
+    <label class="field"><span>To</span><input type="date" id="dateTo"></label>
+    <button id="resetFilters" class="ghost" type="button">Clear filters</button>
+  </div>
+</header>
+
+<div id="chips" class="chips" hidden></div>
+
+<nav class="tabs" role="tablist">
+  <button class="tab is-active" data-view="overview" role="tab">Overview</button>
+  <button class="tab" data-view="revenue" role="tab">Revenue</button>
+  <button class="tab" data-view="catalog" role="tab">Catalogue &amp; customers</button>
+</nav>
+
+<main class="layout">
+  <div class="views">
+
+    <section class="view is-active" data-view="overview">
+      <div class="tiles">
+        <article class="tile"><p class="label">Revenue</p><p class="value" id="kpiRevenue">&mdash;</p><p class="note" id="kpiRevenueNote"></p></article>
+        <article class="tile"><p class="label">Unique users</p><p class="value" id="kpiUsers">&mdash;</p><p class="note" id="kpiUsersNote"></p></article>
+        <article class="tile"><p class="label">Author sets</p><p class="value" id="kpiAuthorSets">&mdash;</p><p class="note" id="kpiBooksNote"></p></article>
+        <article class="tile"><p class="label">Orders</p><p class="value" id="kpiOrders">&mdash;</p><p class="note" id="kpiOrdersNote"></p></article>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Daily revenue</h2>
+          <p class="panel-sub" id="dailySub"></p>
+        </div>
+        <div class="chart-wrap"><canvas id="dailyChart"></canvas></div>
+      </div>
+
+      <div class="duo">
+        <div class="panel">
+          <div class="panel-head"><h2>Most popular author set</h2></div>
+          <p class="hero" id="popularAuthors">&mdash;</p>
+          <p class="note" id="popularAuthorsNote"></p>
+          <p class="note" id="popularSingle"></p>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Best buyer</h2></div>
+          <p class="hero mono" id="bestBuyerIds">&mdash;</p>
+          <p class="note" id="bestBuyerNote"></p>
+          <p class="note" id="bestBuyerNames"></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="revenue">
+      <div class="duo">
+        <div class="panel">
+          <div class="panel-head"><h2>Top 5 days by revenue</h2></div>
+          <table class="grid" id="topDaysTable"><thead><tr><th>Date</th><th class="num">Revenue</th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Top 5 days compared</h2></div>
+          <div class="chart-wrap short"><canvas id="topDaysChart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Monthly revenue</h2></div>
+        <div class="chart-wrap"><canvas id="monthChart"></canvas></div>
+      </div>
+    </section>
+
+    <section class="view" data-view="catalog">
+      <div class="duo">
+        <div class="panel">
+          <div class="panel-head"><h2>Units sold by genre</h2></div>
+          <div class="chart-wrap short"><canvas id="genreChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Best selling titles</h2></div>
+          <div class="chart-wrap short"><canvas id="booksChart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Catalogue</h2>
+          <p class="panel-sub" id="booksSub"></p>
+        </div>
+        <table class="grid" id="booksTable">
+          <thead><tr><th>#</th><th>Title</th><th>Author(s)</th><th>Genre</th><th class="num">Year</th><th class="num">Sold</th><th class="num">Revenue</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>Customers</h2>
+          <p class="panel-sub" id="customersSub"></p>
+        </div>
+        <table class="grid" id="customersTable">
+          <thead><tr><th>Names</th><th>IDs (aliases)</th><th>E-mail</th><th class="num">Orders</th><th class="num">Spent</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+  </div>
+
+  <aside class="chat" aria-label="Assistant">
+    <div class="chat-head">
+      <h2>Assistant</h2>
+      <p class="panel-sub">Ask about the data, or tell it to change the view</p>
+    </div>
+    <div class="chat-log" id="chatLog">
+      <div class="bubble bot">
+        <p>Every figure below comes from an API call that computes in pandas, never from the model's memory. The tools used are listed under each answer.</p>
+        <div class="examples">
+          <button type="button">Which month had the highest revenue?</button>
+          <button type="button">How many real customers does STORE3 have?</button>
+          <button type="button">Show customers whose e-mail starts with s or p</button>
+          <button type="button">Filter out books that have people names in the title</button>
+        </div>
+      </div>
+    </div>
+    <form class="chat-form" id="chatForm">
+      <input id="chatInput" type="text" autocomplete="off" placeholder="Ask a question or give an instruction&hellip;">
+      <button type="submit">Send</button>
+    </form>
+  </aside>
+</main>
+
+<footer class="foot">
+  <p>Prices converted to US dollars at &euro;1 = $1.20. User records differing in at most one field are merged into one person.</p>
+</footer>
+</body>
+</html>

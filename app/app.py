@@ -12,8 +12,8 @@ from flask.json.provider import DefaultJSONProvider
 import tools
 from datastore import DataStore, apply_order_filters, grouped_aggregate
 
-ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
-MODEL = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-5-5')
+GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}'
+MODEL = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash')
 MAX_TOOL_ROUNDS = 8
 
 SYSTEM_PROMPT = """You are the analyst built into a bookstore BI dashboard.
@@ -153,7 +153,7 @@ def api_customers():
 @app.get('/api/health')
 def api_health():
     return {'ok': True, 'stores': data.store_names,
-            'chat_configured': bool(os.environ.get('ANTHROPIC_API_KEY')),
+            'chat_configured': bool(os.environ.get('GEMINI_API_KEY')),
             'model': MODEL, 'tools': len(tools.schemas())}
 
 
@@ -175,20 +175,20 @@ def lowest_common_multiple():
     return Response(body, status=200, mimetype='text/plain')
 
 
-def call_anthropic(payload, api_key):
+def call_gemini(payload, api_key):
+    url = GEMINI_URL.format(MODEL, api_key)
     request_object = urllib.request.Request(
-        ANTHROPIC_URL, data=json.dumps(payload).encode('utf-8'), method='POST',
-        headers={'content-type': 'application/json', 'x-api-key': api_key,
-                 'anthropic-version': '2023-06-01'})
+        url, data=json.dumps(payload).encode('utf-8'), method='POST',
+        headers={'content-type': 'application/json'})
     with urllib.request.urlopen(request_object, timeout=120) as response:
         return json.loads(response.read().decode('utf-8'))
 
 
 @app.post('/api/chat')
 def api_chat():
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    api_key = os.environ.get('GEMINI_API_KEY')
     if not api_key:
-        return {'error': 'ANTHROPIC_API_KEY is not set on the server'}, 503
+        return {'error': 'GEMINI_API_KEY is not set on the server'}, 503
 
     payload = request.get_json(force=True, silent=True) or {}
     store = data.resolve_store(payload.get('store'))
@@ -196,49 +196,79 @@ def api_chat():
     if not history:
         return {'error': 'no messages'}, 400
 
-    messages = [{'role': message['role'], 'content': message['content']}
-                for message in history if message.get('role') in ('user', 'assistant')]
+    gemini_tools = [{"functionDeclarations": []}]
+    for t in tools.schemas():
+        gemini_tools[0]["functionDeclarations"].append({
+            "name": t["name"],
+            "description": t["description"],
+            "parameters": t["input_schema"]
+        })
+
+    system_instruction = {"parts": [{"text": SYSTEM_PROMPT + f'\nThe dashboard is currently showing {store}.'}]}
+
+    contents = []
+    for message in history:
+        if message.get('role') in ('user', 'assistant'):
+            role = "model" if message['role'] == "assistant" else "user"
+            contents.append({"role": role, "parts": [{"text": message['content']}]})
+
     trace, ui_actions = [], []
 
     for _ in range(MAX_TOOL_ROUNDS):
         try:
-            response = call_anthropic({
-                'model': MODEL, 'max_tokens': 1600,
-                'system': SYSTEM_PROMPT + f'\nThe dashboard is currently showing {store}.',
-                'tools': tools.schemas(), 'messages': messages}, api_key)
+            response = call_gemini({
+                "systemInstruction": system_instruction,
+                "contents": contents,
+                "tools": gemini_tools,
+                "generationConfig": {"maxOutputTokens": 1600}
+            }, api_key)
         except urllib.error.HTTPError as error:
             detail = error.read().decode('utf-8', 'replace')[:400]
-            return {'error': f'Anthropic API {error.code}: {detail}'}, 502
+            return {'error': f'Gemini API {error.code}: {detail}'}, 502
         except Exception as error:
             return {'error': f'{type(error).__name__}: {error}'}, 502
 
-        blocks = response.get('content', [])
-        messages.append({'role': 'assistant', 'content': blocks})
+        candidates = response.get('candidates', [])
+        if not candidates:
+            return {'error': 'No response from model'}, 502
 
-        if response.get('stop_reason') != 'tool_use':
-            reply = '\n'.join(block.get('text', '') for block in blocks
-                              if block.get('type') == 'text')
+        message_obj = candidates[0].get('content', {})
+        parts = message_obj.get('parts', [])
+        
+        if message_obj:
+            contents.append(message_obj)
+
+        function_calls = [p['functionCall'] for p in parts if 'functionCall' in p]
+
+        if not function_calls:
+            reply = '\n'.join(p.get('text', '') for p in parts if 'text' in p)
             return {'reply': reply.strip(), 'tool_calls': trace,
                     'ui_actions': ui_actions, 'store': store}
 
-        results = []
-        for block in blocks:
-            if block.get('type') != 'tool_use':
-                continue
-            outcome = tools.call(data, block['name'], block.get('input'), default_store=store)
-            trace.append({'tool': block['name'], 'input': block.get('input'),
-                          'ok': 'error' not in outcome})
+        tool_results = []
+        for fcall in function_calls:
+            name = fcall['name']
+            args = fcall.get('args', {})
+            
+            outcome = tools.call(data, name, args, default_store=store)
+            trace.append({'tool': name, 'input': args, 'ok': 'error' not in outcome})
+            
             if isinstance(outcome, dict) and 'ui_action' in outcome:
                 ui_actions.append(outcome['ui_action'])
                 if outcome['ui_action'].get('type') == 'set_store':
                     store = outcome['ui_action']['store']
-            results.append({'type': 'tool_result', 'tool_use_id': block['id'],
-                            'content': json.dumps(outcome, default=str)[:20000]})
-        messages.append({'role': 'user', 'content': results})
+            
+            tool_results.append({
+                "functionResponse": {
+                    "name": name,
+                    "response": {"result": outcome}
+                }
+            })
+
+        contents.append({"role": "user", "parts": tool_results})
 
     return {'reply': 'I could not finish within the tool-call budget.',
             'tool_calls': trace, 'ui_actions': ui_actions, 'store': store}
-
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8000)), debug=True)
